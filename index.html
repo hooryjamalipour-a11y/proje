@@ -4,125 +4,106 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no,viewport-fit=cover">
 <meta name="theme-color" content="#000000">
-<title>رستم و سیمرغ AR v3.1.0</title>
+<title>رستم و سیمرغ | نسخه ۵.۱.۰</title>
 <style>
-*{box-sizing:border-box}html,body{margin:0;width:100%;height:100%;overflow:hidden;background:#000;font-family:system-ui,sans-serif;color:#fff}
-#cam,#fallback{position:fixed;inset:0;width:100%;height:100%;object-fit:cover;background:#000}#cam{display:none}#fallback{display:none}
-#xr{position:fixed;inset:0;z-index:2;pointer-events:none}#xr canvas{display:block;width:100%;height:100%}
-#panel{position:fixed;z-index:8;left:12px;right:12px;top:calc(12px + env(safe-area-inset-top,0px));display:flex;gap:8px;justify-content:center;align-items:center;flex-wrap:wrap;pointer-events:none}
-#panel button{pointer-events:auto;border:1px solid #ffffff55;border-radius:24px;padding:10px 14px;background:#102d31eF;color:#fff;font:600 14px system-ui;box-shadow:0 3px 16px #0005}
-#status{position:fixed;z-index:8;bottom:calc(12px + env(safe-area-inset-bottom,0px));left:12px;right:12px;text-align:center;padding:9px 12px;border-radius:12px;background:#0009;color:#fff;font-size:13px;line-height:1.5;pointer-events:none}
-.hidden{display:none!important}
+*{box-sizing:border-box}html,body{margin:0;width:100%;height:100%;overflow:hidden;background:#000;color:#fff;font-family:system-ui,-apple-system,"Segoe UI",Tahoma,sans-serif}
+#wrap{position:fixed;inset:0;background:#000}
+canvas{position:absolute;inset:0;width:100%;height:100%;display:block}
+#camera{display:none}#character{display:none}
+#controls{position:absolute;z-index:5;left:12px;right:12px;top:calc(env(safe-area-inset-top) + 12px);padding:13px;background:rgba(0,0,0,.72);border:1px solid #ffffff2b;border-radius:15px;backdrop-filter:blur(8px)}
+h1{font-size:17px;margin:0 0 6px}p{font-size:12px;line-height:1.6;color:#e5e5e5;margin:0 0 10px}
+button{width:100%;border:0;border-radius:11px;background:#e9b65b;color:#16120a;font-weight:800;font-size:15px;padding:12px}
+#status{font-size:12px;color:#ddd;margin-top:8px;line-height:1.5}
+#hide{position:absolute;z-index:6;left:12px;bottom:calc(env(safe-area-inset-bottom) + 12px);width:auto;padding:9px 12px;background:#222;color:#fff;border:1px solid #ffffff44}
+body.running #controls{background:rgba(0,0,0,.5);padding:9px 12px}
+body.running h1{font-size:13px;margin:0}
+body.running p{display:none}body.running #status{margin-top:4px}
 </style>
 </head>
 <body>
-<video id="character" src="character-green-screen.mp4" playsinline muted preload="auto" crossorigin="anonymous" style="position:absolute;width:1px;height:1px;opacity:0;pointer-events:none"></video>
-<audio id="voice" src="rostam-voice.mp3" preload="auto"></audio>
-<video id="cam" playsinline autoplay muted></video><canvas id="fallback"></canvas><div id="xr"></div>
-<div id="panel"><button id="start">شروع دوربین و اجرا</button><button id="replay" class="hidden">اجرای دوباره</button><button id="sound" class="hidden">فعال‌کردن صدا 🔊</button></div>
-<div id="status">برای شروع، دکمه را بزنید و اجازهٔ دوربین را بدهید.</div>
-<script type="module">
-import * as THREE from 'https://cdn.jsdelivr.net/npm/three@0.164.1/build/three.module.js';
-const $=id=>document.getElementById(id), video=$('character'), audio=$('voice'), cam=$('cam'), fallback=$('fallback'), status=$('status');
-const ENTER=2,HOLD=37,EXIT=2,TOTAL=ENTER+HOLD+EXIT;
-let mode='idle',stream=null,renderer=null,scene=null,xrCamera=null,plane=null,session=null,hitSource=null,refSpace=null;
-let fallbackCtx=null,offCanvas=null,offCtx=null,raf=0,startTime=0,started=false,ended=false,placed=false,anchorMatrix=null,lastHitMatrix=null,audioUnlocked=false;
-let videoTexture=null;
-function say(s){status.textContent=s}
-function keyFrame(source,ctx,w,h){
-  ctx.clearRect(0,0,w,h);ctx.drawImage(source,0,0,w,h);
-  const frame=ctx.getImageData(0,0,w,h),d=frame.data;
-  for(let i=0;i<d.length;i+=4){
-    const r=d[i],g=d[i+1],b=d[i+2];
-    // Remove saturated chroma green; retain warm gold/brown and soften feather edges.
-    const dominance=g-Math.max(r,b);
-    let alpha=1-THREE.MathUtils.smoothstep(dominance,16,78);
-    if(g>105 && g>r*1.12 && g>b*1.10) alpha*=0.03;
-    // Despill green fringing on partially transparent pixels.
-    if(alpha<0.98){const spill=Math.min(g,Math.max(r,b)+18);d[i+1]=Math.round(g*alpha+spill*(1-alpha));}
-    d[i+3]=Math.round(d[i+3]*alpha);
-  }
-  ctx.putImageData(frame,0,0);
+<div id="wrap">
+<canvas id="out"></canvas>
+<video id="camera" playsinline muted autoplay></video>
+<video id="character" src="./character-green-screen.mp4" playsinline preload="auto" crossorigin="anonymous"></video>
+<audio id="voice" src="./rostam-voice.mp3" preload="auto"></audio>
+<div id="controls">
+<h1>رستم و سیمرغ | نسخه ۵.۱.۰</h1>
+<p>با شروع، دوربین و ویدیو فعال می‌شوند. رستم در مرکز قاب و با اندازه بزرگ نمایش داده می‌شود؛ برای حذف کروماکی و شنیدن صدا، شروع را بزنید.</p>
+<button id="start">شروع دوربین و پخش</button>
+<div id="status">برای اجرا، مجوز دوربین را تأیید کنید.</div>
+</div>
+<button id="hide" hidden>نمایش کنترل‌ها</button>
+</div>
+<script>
+const canvas=document.getElementById('out'),ctx=canvas.getContext('2d',{alpha:false});
+const camera=document.getElementById('camera'),character=document.getElementById('character'),voice=document.getElementById('voice');
+const start=document.getElementById('start'),status=document.getElementById('status'),controls=document.getElementById('controls'),hide=document.getElementById('hide');
+let stream=null,raf=0,runStart=0,active=false,showUI=true,lastW=0,lastH=0;
+const clamp=(v,a,b)=>Math.max(a,Math.min(b,v));
+function fitCanvas(){const dpr=Math.min(devicePixelRatio||1,2),w=innerWidth,h=innerHeight;if(w!==lastW||h!==lastH){lastW=w;lastH=h;canvas.width=Math.round(w*dpr);canvas.height=Math.round(h*dpr);canvas.style.width=w+'px';canvas.style.height=h+'px';ctx.setTransform(dpr,0,0,dpr,0,0)}}
+function drawCover(video,w,h){const vw=video.videoWidth||w,vh=video.videoHeight||h,s=Math.max(w/vw,h/vh),dw=vw*s,dh=vh*s;ctx.drawImage(video,(w-dw)/2,(h-dh)/2,dw,dh)}
+function drawKeyedCharacter(w,h,elapsed){
+ if(character.readyState<2||!character.videoWidth)return;
+ const vw=character.videoWidth,vh=character.videoHeight;
+ // Keep the character large and centered, with a small entry/exit scale animation.
+ let scale;
+ if(elapsed<2){const t=clamp(elapsed/2,0,1);scale=.25+.75*(t*t*(3-2*t))}
+ else if(elapsed<39)scale=1;
+ else if(elapsed<41)scale=1-clamp((elapsed-39)/2,0,1);
+ else return;
+ const targetW=Math.min(w*.88, h*1.08);
+ const dw=targetW*scale,dh=dw*vh/vw;
+ // Process video frame in an offscreen canvas and remove bright green.
+ if(!drawKeyedCharacter.tmp){drawKeyedCharacter.tmp=document.createElement('canvas');drawKeyedCharacter.tctx=drawKeyedCharacter.tmp.getContext('2d',{willReadFrequently:true})}
+ const tmp=drawKeyedCharacter.tmp,tctx=drawKeyedCharacter.tctx;
+ if(tmp.width!==vw||tmp.height!==vh){tmp.width=vw;tmp.height=vh}
+ tctx.drawImage(character,0,0,vw,vh);
+ let img;
+ try{img=tctx.getImageData(0,0,vw,vh)}catch(e){return}
+ const d=img.data;
+ for(let i=0;i<d.length;i+=4){
+  const r=d[i],g=d[i+1],b=d[i+2];
+  // Green-screen key: suppress vivid green; feather edge to avoid a hard outline.
+  const dominance=g-Math.max(r,b);
+  const green=Math.max(0,Math.min(1,(dominance-18)/65))*Math.max(0,Math.min(1,(g-65)/95));
+  if(green>.88)d[i+3]=0;
+  else if(green>.12)d[i+3]=Math.round(d[i+3]*(1-green));
+  if(d[i+3]>0 && dominance>12){d[i+1]=Math.min(g,Math.max(r,b)+Math.round((g-Math.max(r,b))*(1-green)*.25))}
+ }
+ tctx.putImageData(img,0,0);
+ ctx.drawImage(tmp,(w-dw)/2,(h-dh)/2,dw,dh);
 }
-function stopCamera(){if(stream){stream.getTracks().forEach(t=>t.stop());stream=null;}cam.srcObject=null}
-function makeFallback(){
-  mode='fallback';cam.style.display='block';fallback.style.display='block';$('xr').replaceChildren();
-  fallback.width=Math.max(720,Math.min(1080,Math.round(innerWidth*devicePixelRatio)));fallback.height=Math.max(1280,Math.round(fallback.width*innerHeight/innerWidth));
-  fallbackCtx=fallback.getContext('2d',{willReadFrequently:true});offCanvas=document.createElement('canvas');offCanvas.width=640;offCanvas.height=360;offCtx=offCanvas.getContext('2d',{willReadFrequently:true});
-  const draw=()=>{
-    if(mode!=='fallback')return;
-    const w=fallback.width,h=fallback.height;fallbackCtx.clearRect(0,0,w,h);
-    if(cam.readyState>=2){const vw=cam.videoWidth||w,vh=cam.videoHeight||h,scale=Math.max(w/vw,h/vh),dw=vw*scale,dh=vh*scale;fallbackCtx.drawImage(cam,(w-dw)/2,(h-dh)/2,dw,dh)}
-    if(started&&!ended&&video.readyState>=2){
-      keyFrame(video,offCtx,offCanvas.width,offCanvas.height);
-      const t=(performance.now()-startTime)/1000;
-      if(t<TOTAL){const enter=Math.min(1,t/ENTER),exit=t>ENTER+HOLD?Math.max(0,1-(t-ENTER-HOLD)/EXIT):1,alpha=Math.min(enter,exit);
-        const ww=w*0.48,hh=ww*9/16; // much larger than previous ~17% width
-        const centerY=h*0.52;
-        let centerX=w*0.50;
-        if(t<ENTER)centerX=w*0.50+(1-enter)*(-w*0.58);
-        else if(t>ENTER+HOLD)centerX=w*0.50+((t-(ENTER+HOLD))/EXIT)*(w*0.58);
-        fallbackCtx.globalAlpha=alpha;fallbackCtx.drawImage(offCanvas,centerX-ww/2,centerY-hh/2,ww,hh);fallbackCtx.globalAlpha=1;
-      }else finishPlayback();
-    }
-    raf=requestAnimationFrame(draw);
-  };draw();
-}
-function finishPlayback(){if(ended)return;ended=true;audio.pause();video.pause();$('replay').classList.remove('hidden');say('اجرا تمام شد. برای اجرای دوباره، دکمهٔ اجرای دوباره را بزنید.')}
-async function startMedia(){
-  if(started)return;started=true;ended=false;startTime=performance.now();video.loop=true;video.muted=true;video.currentTime=0;
-  try{await video.play()}catch(e){say('پخش ویدیو شروع نشد؛ دوباره دکمهٔ شروع را لمس کنید.');started=false;return}
-  audio.currentTime=0;audio.volume=1;
-  try{await audio.play();audioUnlocked=true;$('sound').classList.add('hidden')}catch(e){$('sound').classList.remove('hidden');say('تصویر شروع شد؛ برای فعال‌شدن صدای جداگانه دکمهٔ صدا را لمس کنید.')}
-}
-async function openCamera(){
-  if(!navigator.mediaDevices?.getUserMedia){say('این مرورگر به دوربین دسترسی نمی‌دهد. با Chrome به‌روز و HTTPS امتحان کنید.');return false}
-  try{stream=await navigator.mediaDevices.getUserMedia({audio:false,video:{facingMode:{ideal:'environment'},width:{ideal:1280},height:{ideal:1920}}});cam.srcObject=stream;await cam.play();return true}
-  catch(e){say('دسترسی دوربین ناموفق بود: مجوز دوربین را بررسی کنید.');return false}
-}
-function makePlane(){
-  videoTexture=new THREE.VideoTexture(video);videoTexture.colorSpace=THREE.SRGBColorSpace;videoTexture.minFilter=THREE.LinearFilter;videoTexture.magFilter=THREE.LinearFilter;videoTexture.generateMipmaps=false;
-  const mat=new THREE.ShaderMaterial({transparent:true,depthWrite:false,side:THREE.DoubleSide,uniforms:{map:{value:videoTexture},opacity:{value:1}},vertexShader:'varying vec2 vUv; void main(){vUv=uv;gl_Position=projectionMatrix*modelViewMatrix*vec4(position,1.0);}',fragmentShader:`uniform sampler2D map;uniform float opacity;varying vec2 vUv;void main(){vec4 c=texture2D(map,vUv);float dominance=c.g-max(c.r,c.b);float a=1.0-smoothstep(0.065,0.31,dominance);if(c.g>0.42&&c.g>c.r*1.14&&c.g>c.b*1.12)a*=0.025;float spill=max(c.r,c.b)+0.04;c.g=mix(c.g,min(c.g,spill),1.0-a);if(a<0.035)discard;gl_FragColor=vec4(c.rgb,a*opacity);}`});
-  // Width 2.7 m at the placement distance: a visible human-sized presence, not a tiny sprite.
-  const mesh=new THREE.Mesh(new THREE.PlaneGeometry(2.7,1.52),mat);mesh.frustumCulled=false;return mesh;
-}
-async function startWebXR(){
-  if(!navigator.xr||!await navigator.xr.isSessionSupported('immersive-ar'))return false;
-  try{
-    scene=new THREE.Scene();xrCamera=new THREE.PerspectiveCamera();renderer=new THREE.WebGLRenderer({alpha:true,antialias:true,preserveDrawingBuffer:false});renderer.setPixelRatio(Math.min(devicePixelRatio,2));renderer.setSize(innerWidth,innerHeight);renderer.xr.enabled=true;renderer.xr.setReferenceSpaceType('local');$('xr').replaceChildren(renderer.domElement);
-    plane=makePlane();plane.visible=false;scene.add(plane);
-    session=await navigator.xr.requestSession('immersive-ar',{requiredFeatures:['hit-test'],optionalFeatures:['local-floor','dom-overlay'],domOverlay:{root:document.body}});
-    await renderer.xr.setSession(session);refSpace=await session.requestReferenceSpace('local');const viewerSpace=await session.requestReferenceSpace('viewer');hitSource=await session.requestHitTestSource({space:viewerSpace});
-    session.addEventListener('select',()=>{if(lastHitMatrix){anchorMatrix=lastHitMatrix.clone();placed=true;say('مکان ثبت شد؛ رستم و سیمرغ در همین نقطه می‌مانند.');if(!started)startMedia();}});
-    session.addEventListener('end',()=>{mode='ended';stopCamera();});mode='ar';cam.style.display='none';fallback.style.display='none';cancelAnimationFrame(raf);stopCamera();say('گوشی را آرام به سمت زمین بگیرید؛ وقتی سطح شناسایی شد، یک‌بار روی صفحه بزنید تا مکان ثبت شود.');
-    renderer.setAnimationLoop((time,frame)=>{
-      if(!frame){renderer.render(scene,xrCamera);return}
-      const elapsed=started?(performance.now()-startTime)/1000:0;
-      const results=frame.getHitTestResults(hitSource);lastHitMatrix=null;
-      if(!placed&&results.length){const pose=results[0].getPose(refSpace);if(pose){lastHitMatrix=new THREE.Matrix4().fromArray(pose.transform.matrix);}}
-      if(plane){
-        if(!placed&&lastHitMatrix){const pos=new THREE.Vector3().setFromMatrixPosition(lastHitMatrix);plane.matrixAutoUpdate=true;plane.position.copy(pos);plane.quaternion.copy(xrCamera.quaternion);plane.visible=true;}
-        else if(placed&&anchorMatrix){const pos=new THREE.Vector3().setFromMatrixPosition(anchorMatrix);plane.matrixAutoUpdate=true;plane.position.copy(pos);plane.quaternion.copy(xrCamera.quaternion);plane.visible=started&&!ended&&elapsed<TOTAL;
-          let alpha=1,offset=0;if(elapsed<ENTER){const p=elapsed/ENTER;alpha=p;offset=-1.5*(1-p)}else if(elapsed>ENTER+HOLD){const p=Math.min(1,(elapsed-ENTER-HOLD)/EXIT);alpha=1-p;offset=1.5*p}const right=new THREE.Vector3(1,0,0).applyQuaternion(xrCamera.quaternion);plane.position.addScaledVector(right,offset);plane.material.uniforms.opacity.value=alpha;
-        }else plane.visible=false;
-      }
-      if(started&&elapsed>=TOTAL)finishPlayback();renderer.render(scene,xrCamera);
-    });return true;
-  }catch(e){console.warn('WebXR failed',e);try{if(session)await session.end()}catch(_){}session=null;return false}
+function loop(){
+ fitCanvas();const w=innerWidth,h=innerHeight;
+ if(camera.readyState>=2)drawCover(camera,w,h);else{ctx.fillStyle='#080808';ctx.fillRect(0,0,w,h)}
+ if(active){const elapsed=(performance.now()-runStart)/1000;drawKeyedCharacter(w,h,elapsed);
+  if(elapsed>=41){active=false;character.pause();voice.pause();status.textContent='اجرا تمام شد. برای شروع دوباره دکمه را بزنید.';start.disabled=false;start.textContent='شروع دوباره';document.body.classList.remove('running')}
+ }
+ raf=requestAnimationFrame(loop)
 }
 async function begin(){
-  $('start').disabled=true;say('در حال راه‌اندازی دوربین…');
-  const ok=await openCamera();if(!ok){$('start').disabled=false;return}
-  // Attempt true world tracking first. Unsupported browsers use a clearly labeled camera-overlay fallback.
-  const ar=await startWebXR();
-  if(!ar){makeFallback();say('حالت سازگار فعال است؛ در این مرورگر قفل سه‌بعدی محیط پشتیبانی نمی‌شود. برای AR واقعی از Android Chrome سازگار با WebXR استفاده کنید.');await startMedia()}
-  $('start').classList.add('hidden');
+ start.disabled=true;status.textContent='در حال باز کردن دوربین…';
+ try{
+  if(!navigator.mediaDevices||!navigator.mediaDevices.getUserMedia)throw new Error('دوربین در این مرورگر در دسترس نیست؛ لینک باید HTTPS باشد.');
+  stream=await navigator.mediaDevices.getUserMedia({video:{facingMode:{ideal:'environment'},width:{ideal:1920},height:{ideal:1080}},audio:false});
+  camera.srcObject=stream;await camera.play();
+  character.pause();character.currentTime=0;
+  await character.play();
+  voice.pause();voice.currentTime=0;
+  // The gesture starts both media tracks together; muted video avoids duplicate/green-screen audio.
+  const audioPromise=voice.play();
+  if(audioPromise)audioPromise.catch(()=>{status.textContent='تصویر اجرا شد؛ برای پخش صدا، صدای گوشی را بررسی و دوباره شروع کنید.'});
+  runStart=performance.now();active=true;
+  document.body.classList.add('running');hide.hidden=false;start.textContent='در حال پخش…';
+  status.textContent='در حال پخش: ورود ۲ ثانیه · مکث ۳۷ ثانیه · خروج ۲ ثانیه';
+ }catch(e){console.error(e);status.textContent='خطا: '+(e.message||e)+' اگر مجوز دوربین را نداده‌اید، اجازه دهید و دوباره بزنید.';start.disabled=false}
 }
-$('start').addEventListener('click',begin);
-$('sound').addEventListener('click',async()=>{try{await audio.play();audioUnlocked=true;$('sound').classList.add('hidden')}catch(e){say('مرورگر هنوز اجازهٔ پخش صدا نداده است؛ دوباره لمس کنید.')}});
-$('replay').addEventListener('click',async()=>{ended=false;started=false;placed=false;anchorMatrix=null;audio.pause();audio.currentTime=0;video.pause();video.currentTime=0;$('replay').classList.add('hidden');if(mode==='ar'){say('دوباره سطح زمین را نشانه بگیرید و لمس کنید تا محل ثبت شود.')}else{await startMedia()}});
-addEventListener('resize',()=>{if(renderer&&mode==='ar'){renderer.setSize(innerWidth,innerHeight)}});
-addEventListener('pagehide',()=>{cancelAnimationFrame(raf);stopCamera();if(session)session.end().catch(()=>{});if(videoTexture)videoTexture.dispose();if(renderer)renderer.dispose()});
+start.addEventListener('click',begin);
+hide.addEventListener('click',()=>{showUI=!showUI;controls.style.display=showUI?'block':'none';hide.textContent=showUI?'پنهان‌کردن کنترل‌ها':'نمایش کنترل‌ها'});
+addEventListener('resize',fitCanvas);
+character.addEventListener('error',()=>{status.textContent='فایل character-green-screen.mp4 پیدا نشد؛ آن را کنار index.html در GitHub بگذارید.'});
+voice.addEventListener('error',()=>{status.textContent='فایل rostam-voice.mp3 پیدا نشد؛ آن را کنار index.html در GitHub بگذارید.'});
+fitCanvas();loop();
 </script>
 </body>
 </html>
