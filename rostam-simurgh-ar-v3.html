@@ -1,0 +1,161 @@
+<!doctype html>
+<html lang="fa" dir="rtl">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no,viewport-fit=cover">
+<meta name="theme-color" content="#000000">
+<title>Rostam Simurgh AR v3.0.0</title>
+<style>
+*{box-sizing:border-box}html,body{margin:0;width:100%;height:100%;overflow:hidden;background:#000}
+#cam,#fallback{position:fixed;inset:0;width:100%;height:100%;object-fit:cover;background:#000}
+#cam{display:none}#fallback{display:none}#xr{position:fixed;inset:0;pointer-events:none;z-index:2}
+#sound{display:none;position:fixed;z-index:9;left:50%;bottom:calc(18px + env(safe-area-inset-bottom,0px));transform:translateX(-50%);border:1px solid #ffffff66;border-radius:28px;padding:12px 20px;background:#102d31eF;color:#fff;font:600 15px system-ui}
+#hint{position:fixed;z-index:8;inset:0;display:none;pointer-events:none}
+</style>
+</head>
+<body>
+<video id="character" src="character-green-screen.mp4" playsinline muted preload="auto" crossorigin="anonymous"></video>
+<audio id="voice" src="rostam-voice.mp3" preload="auto"></audio>
+<video id="cam" playsinline autoplay muted></video><canvas id="fallback"></canvas><div id="xr"></div>
+<button id="sound">برای پخش صدا لمس کن 🔊</button>
+<script type="module">
+import * as THREE from 'https://cdn.jsdelivr.net/npm/three@0.164.1/build/three.module.js';
+
+const $=id=>document.getElementById(id), video=$('character'), audio=$('voice'), cam=$('cam'), fallback=$('fallback'), soundBtn=$('sound');
+let mode='none', stream=null, renderer, scene, xrCamera, plane, material, canvasCtx, raf=0, session=null;
+let startTime=0, fixedPos=null, rightVec=null, baseQuat=null, audioStarted=false, arTried=false, ended=false;
+const ENTER=2, HOLD=37, EXIT=2, TOTAL=ENTER+HOLD+EXIT;
+const V_DURATION=28.5; // provided green-screen video is 28.5 seconds; loop visuals to cover the 41-second voice track
+const world = new THREE.Vector3();
+
+function keyGreen(ctx, source, w, h) {
+  ctx.drawImage(source,0,0,w,h);
+  const img=ctx.getImageData(0,0,w,h), d=img.data;
+  for(let i=0;i<d.length;i+=4){
+    const r=d[i],g=d[i+1],b=d[i+2];
+    const excess=g-Math.max(r,b);
+    // Soft chroma key for vivid green. Preserve non-green feather and gold/brown feathers.
+    let a=1-THREE.MathUtils.smoothstep(excess,18,105);
+    if(g>145 && g>r*1.22 && g>b*1.18) a*=0.02;
+    d[i+3]=Math.round(d[i+3]*a);
+  }
+  ctx.putImageData(img,0,0);
+}
+function startFallback(){
+  mode='fallback'; cam.style.display='block'; fallback.style.display='block';
+  fallback.width=720; fallback.height=1280; canvasCtx=fallback.getContext('2d',{willReadFrequently:true});
+  const off=document.createElement('canvas'); off.width=640; off.height=360;
+  const oc=off.getContext('2d',{willReadFrequently:true});
+  const draw=()=>{
+    if(mode!=='fallback') return;
+    const w=fallback.width,h=fallback.height; canvasCtx.clearRect(0,0,w,h);
+    if(cam.readyState>=2){
+      const vw=cam.videoWidth||w,vh=cam.videoHeight||h,scale=Math.max(w/vw,h/vh),dw=vw*scale,dh=vh*scale;
+      canvasCtx.drawImage(cam,(w-dw)/2,(h-dh)/2,dw,dh);
+    }
+    if(video.readyState>=2 && !ended){
+      oc.clearRect(0,0,640,360); keyGreen(oc,video,640,360);
+      const t=(performance.now()-startTime)/1000;
+      if(t<TOTAL){
+        const entry=Math.min(1,t/ENTER), exit=t>ENTER+HOLD?Math.max(0,1-(t-ENTER-HOLD)/EXIT):1;
+        const visible=Math.min(entry,exit);
+        const ww=w*.17, hh=ww*360/640;
+        const x=w*.5 + (t<ENTER?(1-entry)*(-w*.55):t>ENTER+HOLD?(t-(ENTER+HOLD))/EXIT*w*.55:0);
+        canvasCtx.globalAlpha=visible;
+        canvasCtx.drawImage(off,x-ww/2,h*.34-hh/2,ww,hh);
+        canvasCtx.globalAlpha=1;
+      } else { ended=true; }
+    }
+    raf=requestAnimationFrame(draw);
+  };
+  draw();
+}
+function makePlane(){
+  const tex=new THREE.VideoTexture(video); tex.colorSpace=THREE.SRGBColorSpace; tex.minFilter=THREE.LinearFilter; tex.magFilter=THREE.LinearFilter;
+  material=new THREE.ShaderMaterial({
+    transparent:true,depthWrite:false,side:THREE.DoubleSide,
+    uniforms:{map:{value:tex},opacity:{value:1}},
+    vertexShader:'varying vec2 vUv; void main(){vUv=uv;gl_Position=projectionMatrix*modelViewMatrix*vec4(position,1.0);}',
+    fragmentShader:`uniform sampler2D map; uniform float opacity; varying vec2 vUv;
+    void main(){vec4 c=texture2D(map,vUv);float ex=c.g-max(c.r,c.b);float a=1.0-smoothstep(0.07,0.40,ex);
+    if(c.g>0.55 && c.g>c.r*1.22 && c.g>c.b*1.18) a*=0.015;
+    gl_FragColor=vec4(c.rgb,a*opacity);if(gl_FragColor.a<0.02)discard;}`
+  });
+  // A compact distant sprite; full video frame occupies roughly one-sixth of the screen.
+  const mesh=new THREE.Mesh(new THREE.PlaneGeometry(1.28,0.72),material);
+  mesh.frustumCulled=false; return mesh;
+}
+function startAudioAndVisual(){
+  if(audioStarted) return;
+  audioStarted=true; startTime=performance.now(); ended=false;
+  video.loop=true; video.muted=true; video.currentTime=0;
+  video.play().catch(()=>{});
+  audio.currentTime=0; audio.volume=1;
+  audio.play().catch(()=>{soundBtn.style.display='block';});
+}
+async function openCamera(){
+  try{
+    stream=await navigator.mediaDevices.getUserMedia({audio:false,video:{facingMode:{ideal:'environment'},width:{ideal:1280},height:{ideal:1920}}});
+    cam.srcObject=stream; await cam.play(); startFallback(); startAudioAndVisual();
+  }catch(e){console.warn('Camera permission/device issue',e);}
+}
+function cameraPose(){
+  const p=new THREE.Vector3(), q=new THREE.Quaternion();
+  xrCamera.getWorldPosition(p); xrCamera.getWorldQuaternion(q);
+  const forward=new THREE.Vector3(0,0,-1).applyQuaternion(q).normalize();
+  const right=new THREE.Vector3(1,0,0).applyQuaternion(q).normalize();
+  // Freeze the chosen world-space location once; never update it as the phone moves.
+  fixedPos=p.clone().add(forward.multiplyScalar(6.0));
+  fixedPos.y=p.y+0.15; // hovering in the air, not attached to the floor/table
+  rightVec=right;
+  baseQuat=q.clone();
+}
+async function startAR(){
+  if(arTried || !navigator.xr) return; arTried=true;
+  if(!await navigator.xr.isSessionSupported('immersive-ar')) return;
+  try{
+    if(stream){stream.getTracks().forEach(t=>t.stop());stream=null;}
+    cancelAnimationFrame(raf); cam.style.display='none'; fallback.style.display='none'; mode='ar';
+    scene=new THREE.Scene(); xrCamera=new THREE.PerspectiveCamera();
+    renderer=new THREE.WebGLRenderer({alpha:true,antialias:true}); renderer.setPixelRatio(Math.min(devicePixelRatio,2)); renderer.setSize(innerWidth,innerHeight); renderer.xr.enabled=true; renderer.xr.setReferenceSpaceType('local');
+    $('xr').replaceChildren(renderer.domElement);
+    plane=makePlane(); plane.visible=false; scene.add(plane);
+    session=await navigator.xr.requestSession('immersive-ar',{optionalFeatures:['local-floor','dom-overlay'],domOverlay:{root:document.body}});
+    await renderer.xr.setSession(session);
+    renderer.setAnimationLoop((time)=>{
+      const elapsed=(time-startTime)/1000;
+      if(!fixedPos) cameraPose();
+      if(plane && fixedPos && elapsed<TOTAL){
+        let dx=0, alpha=1;
+        if(elapsed<ENTER){const p=elapsed/ENTER;dx=-1.5*(1-p);alpha=p;}
+        else if(elapsed>ENTER+HOLD){const p=Math.min(1,(elapsed-ENTER-HOLD)/EXIT);dx=1.5*p;alpha=1-p;}
+        plane.position.copy(fixedPos).addScaledVector(rightVec,dx);
+        // Face the current view direction, but do not change the anchored position.
+        const cp=new THREE.Vector3(); xrCamera.getWorldPosition(cp);
+        plane.quaternion.copy(xrCamera.quaternion);
+        plane.material.uniforms.opacity.value=alpha;
+        plane.visible=true;
+      } else if(plane){plane.visible=false;}
+      if(elapsed>=TOTAL && !ended){ended=true;audio.pause();audio.currentTime=Math.min(audio.duration||TOTAL,TOTAL);}
+      renderer.render(scene,xrCamera);
+    });
+    session.addEventListener('end',()=>{mode='ended';});
+  }catch(e){
+    console.warn('AR session unavailable; use camera fallback',e);
+    mode='fallback';
+    if(!stream) await openCamera();
+  }
+}
+// Camera permission is requested as soon as the page loads. WebXR itself requires a user gesture;
+// the first tap anywhere attempts AR, while also unlocking browser audio autoplay restrictions.
+openCamera();
+document.addEventListener('pointerdown',async()=>{
+  if(!audioStarted) startAudioAndVisual();
+  if(audio.paused && audio.currentTime< TOTAL) audio.play().catch(()=>{soundBtn.style.display='block';});
+  if(mode!=='ar') startAR();
+},{once:true});
+soundBtn.addEventListener('click',async e=>{e.stopPropagation();try{await audio.play();soundBtn.style.display='none';}catch(_){soundBtn.style.display='block';}});
+addEventListener('pagehide',()=>{if(stream)stream.getTracks().forEach(t=>t.stop());cancelAnimationFrame(raf);if(session)session.end().catch(()=>{});});
+</script>
+</body>
+</html>
